@@ -115,6 +115,12 @@ export async function startDeviceCode(
   });
 
   const data = await resp.json() as Record<string, unknown>;
+  console.error("[notoken] device-code request:", {
+    url: `${baseUrl}${apiPath}`,
+    status: resp.status,
+    headers: Object.fromEntries(Object.entries(headers).filter(([k]) => k !== "x-ext-obf-secret" && k !== "x-ext-request-signature")),
+    body: data,
+  });
   if (resp.status !== 200) {
     throw new Error(`Device code failed (HTTP ${resp.status}): ${JSON.stringify(data)}`);
   }
