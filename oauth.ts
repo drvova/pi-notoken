@@ -1,6 +1,10 @@
 /**
  * Device-code OAuth flow for NoTokenLimit.
- * Same flow as the official VS Code extension.
+ * Same flow as the official VS Code extension:
+ *   1. POST /api/auth/extension/device-code → get device_code + user_code + URL
+ *   2. Open browser to verification_uri_complete
+ *   3. Poll POST /api/auth/extension/poll until access_token or expiry
+ *   4. Save tokens to credentials file
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -75,14 +79,17 @@ export function deleteCredentials(): boolean {
 }
 
 // ----------------------------------------------------------------------------
-// Device code flow
+// Device code API calls
 // ----------------------------------------------------------------------------
+
+type IdentityLike = { client_kind: string; version: string; user_agent_product: string; request_payload_prefix: string; installation_id: string; machine_id: string };
+type ReleaseProofLike = { release_id: string; signature: string; [key: string]: unknown };
 
 export async function startDeviceCode(
   baseUrl: string,
   keyPair: ClientKeyPair,
-  identity: { client_kind: string; version: string; user_agent_product: string; request_payload_prefix: string; installation_id: string; machine_id: string },
-  releaseProof: { release_id: string; signature: string; [key: string]: unknown },
+  identity: IdentityLike,
+  releaseProof: ReleaseProofLike,
 ): Promise<DeviceCodeResponse> {
   const apiPath = "/api/auth/extension/device-code";
   const headers = buildRequestHeaders({
@@ -109,7 +116,12 @@ export async function startDeviceCode(
 
   const data = await resp.json() as Record<string, unknown>;
   if (resp.status !== 200) {
-    throw new Error(`Device code failed: ${JSON.stringify(data)}`);
+    throw new Error(`Device code failed (HTTP ${resp.status}): ${JSON.stringify(data)}`);
+  }
+
+  const required = ["device_code", "user_code", "verification_uri"];
+  for (const field of required) {
+    if (!(field in data)) throw new Error(`Device-code response missing field: ${field}`);
   }
 
   return {
@@ -127,8 +139,8 @@ export async function pollDeviceCode(
   deviceCode: string,
   deviceName: string,
   keyPair: ClientKeyPair,
-  identity: { client_kind: string; version: string; user_agent_product: string; request_payload_prefix: string; installation_id: string; machine_id: string },
-  releaseProof: { release_id: string; signature: string; [key: string]: unknown },
+  identity: IdentityLike,
+  releaseProof: ReleaseProofLike,
 ): Promise<{ status: number; data: Record<string, unknown> }> {
   const apiPath = "/api/auth/extension/poll";
   const headers = buildRequestHeaders({
@@ -158,52 +170,45 @@ export async function pollDeviceCode(
 }
 
 // ----------------------------------------------------------------------------
-// Full flow with loopback callback
+// Full device code flow
 // ----------------------------------------------------------------------------
 
-export async function runLoginLoopback(
+export async function runDeviceCodeFlow(
   baseUrl: string,
   keyPair: ClientKeyPair,
-  identity: { client_kind: string; version: string; user_agent_product: string; request_payload_prefix: string; installation_id: string; machine_id: string },
-  releaseProof: { release_id: string; signature: string; [key: string]: unknown },
-  onUrl: (url: string) => void,
+  identity: IdentityLike,
+  releaseProof: ReleaseProofLike,
+  onCode: (userCode: string, verificationUrl: string) => void,
   signal?: AbortSignal,
-): Promise<OAuthCredentials> {
+): Promise<{ accessToken: string; refreshToken: string }> {
   const init = await startDeviceCode(baseUrl, keyPair, identity, releaseProof);
   const url = init.verification_uri_complete || init.verification_uri;
-  onUrl(url);
 
+  // Show the user their code and URL
+  onCode(init.user_code, url);
+
+  // Open browser
   await openBrowser(url).catch(() => {});
 
+  // Poll until done or expired
   const expiresAt = Date.now() + init.expires_in * 1000;
   const intervalMs = Math.max(2000, init.interval * 1000);
+  const deviceName = `pi-${randomHex(4)}`;
 
   while (Date.now() < expiresAt) {
     await sleep(intervalMs);
     if (signal?.aborted) throw new Error("Sign-in cancelled.");
 
     try {
-      const result = await pollDeviceCode(baseUrl, init.device_code, `pi-${randomHex(4)}`, keyPair, identity, releaseProof);
+      const result = await pollDeviceCode(baseUrl, init.device_code, deviceName, keyPair, identity, releaseProof);
       const data = result.data;
 
+      // Success — got access token
       if (result.status === 200 && data.access_token) {
-        const creds: OAuthCredentials = {
+        return {
           accessToken: data.access_token as string,
           refreshToken: (data.refresh_token as string) || "",
-          baseUrl,
-          issuedAt: new Date().toISOString(),
-          keyPair: { privatePem: keyPair.privatePem, publicDerB64url: keyPair.publicDerB64url },
-          identity: {
-            client_kind: identity.client_kind,
-            version: identity.version,
-            user_agent_product: identity.user_agent_product,
-            request_payload_prefix: identity.request_payload_prefix,
-            machine_id: identity.machine_id,
-            installation_id: identity.installation_id,
-          },
         };
-        saveCredentials(creds);
-        return creds;
       }
 
       const code = data.code as string | undefined;
@@ -214,13 +219,12 @@ export async function runLoginLoopback(
       const errorMsg = (data.error as string) || "Authorization failed.";
       throw new Error(errorMsg);
     } catch (e) {
-      if (e instanceof Error && e.message.includes("cancelled")) throw e;
-      if (e instanceof Error && e.message.includes("Authorization")) throw e;
-      // retry on network errors
+      if (e instanceof Error && (e.message.includes("cancelled") || e.message.includes("failed") || e.message.includes("Session"))) throw e;
+      // Network errors → retry
     }
   }
 
-  throw new Error("Authorization code expired. Please try again.");
+  throw new Error("The authorization code expired. Please try again.");
 }
 
 // ----------------------------------------------------------------------------

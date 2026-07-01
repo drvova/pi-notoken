@@ -9,7 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import { startProxy, stopProxy, PROXY_SECRET, setProxyCredentials } from "./proxy";
-import { loadCredentials, saveCredentials, deleteCredentials, runLoginLoopback } from "./oauth";
+import { loadCredentials, saveCredentials, deleteCredentials, runDeviceCodeFlow } from "./oauth";
 import { initIdentity, loadReleaseProof, type IdentityConfig, type ReleaseProof } from "./auth";
 import { clearCachedCatalog, getCachedCatalog, type ModelCatalogEntry } from "./catalog";
 import { type ClientKeyPair } from "./wire";
@@ -89,25 +89,23 @@ async function loginNotoken(callbacks: OAuthLoginCallbacks): Promise<OAuthCreden
 
   const { keyPair, identity, releaseProof } = identityResult;
 
-  let accessToken = "";
-  let refreshToken = "";
-
-  try {
-    const result = await runLoginLoopback(baseUrl, keyPair, identity, releaseProof, (url) => callbacks.onAuth({ url }));
-    accessToken = result.accessToken;
-    refreshToken = result.refreshToken;
-  } catch {
-    const pasted = await callbacks.onPrompt({
-      message: `Open this URL, sign in, then paste the URL or access token:\n\n  ${baseUrl}\n\nPaste:`,
-    });
-    accessToken = pasted.trim();
-  }
-
-  if (!accessToken) throw new Error("No access token received.");
+  // Device code flow: start → show code + URL → open browser → poll automatically
+  const tokens = await runDeviceCodeFlow(
+    baseUrl,
+    keyPair,
+    identity,
+    releaseProof,
+    (userCode, verificationUrl) => {
+      // Show the user their code and the URL to visit
+      callbacks.onAuth({ url: verificationUrl });
+      console.error(`[notoken] Your code: ${userCode}`);
+      console.error(`[notoken] Open: ${verificationUrl}`);
+    },
+  );
 
   const fullCreds: OAuthCredentials = {
-    accessToken,
-    refreshToken,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
     baseUrl,
     issuedAt: new Date().toISOString(),
     keyPair: { privatePem: keyPair.privatePem, publicDerB64url: keyPair.publicDerB64url },
@@ -123,8 +121,8 @@ async function loginNotoken(callbacks: OAuthLoginCallbacks): Promise<OAuthCreden
 
   saveCredentials(fullCreds);
   setProxyCredentials({
-    accessToken: fullCreds.accessToken,
-    refreshToken: fullCreds.refreshToken,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
     baseUrl: fullCreds.baseUrl,
     keyPair,
     identity,
@@ -132,8 +130,8 @@ async function loginNotoken(callbacks: OAuthLoginCallbacks): Promise<OAuthCreden
   });
   clearCachedCatalog();
   return {
-    refresh: fullCreds.accessToken,
-    access: fullCreds.accessToken,
+    refresh: tokens.accessToken,
+    access: tokens.accessToken,
     expires: Date.now() + 365 * 24 * 60 * 60 * 1000,
   };
 }
