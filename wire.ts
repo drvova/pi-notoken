@@ -22,8 +22,9 @@ export function b64urlEncode(buf: Buffer): string {
 }
 
 export function b64urlDecode(s: string): Buffer {
-  const padded = s + "=".repeat((4 - (s.length % 4)) % 4);
-  return Buffer.from(padded, "base64");
+  let b = s.replace(/-/g, "+").replace(/_/g, "/");
+  b += "=".repeat((4 - (b.length % 4)) % 4);
+  return Buffer.from(b, "base64");
 }
 
 // ----------------------------------------------------------------------------
@@ -32,6 +33,11 @@ export function b64urlDecode(s: string): Buffer {
 
 export function sha256Hex(text: string): string {
   return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** SHA-256 of raw bytes, returned as lowercase hex. */
+export function sha256HexBytes(buf: Buffer): string {
+  return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
 export function randomHex(nBytes: number): string {
@@ -76,7 +82,7 @@ export function signPayload(privatePem: string, payload: string): string {
 }
 
 export function publicKeyFingerprint(publicDerB64url: string): string {
-  return sha256Hex(b64urlDecode(publicDerB64url).toString("utf8"));
+  return sha256HexBytes(b64urlDecode(publicDerB64url));
 }
 
 // ----------------------------------------------------------------------------
