@@ -4,6 +4,11 @@
  * The NoTokenLimit server TLS-fingerprint-checks connections.
  * undici/fetch() gets rejected. node:https uses OpenSSL directly
  * and is accepted. This wraps node:https in a fetch-like API.
+ *
+ * Supports both buffered (text/json) and streaming (body.getReader()) modes.
+ * Use text() or json() for non-streaming responses.
+ * Use body.getReader() for SSE streaming — data arrives as it comes.
+ * Do NOT mix: either read body OR call text/json, not both.
  */
 import https from "node:https";
 
@@ -16,10 +21,6 @@ interface Fetch11Response {
   body: ReadableStream<Uint8Array> | null;
 }
 
-/**
- * Fetch that uses node:https instead of undici.
- * Forces HTTP/1.1 ALPN. Drop-in for global fetch on upstream calls.
- */
 export function fetch11(
   url: string | URL,
   init?: RequestInit,
@@ -54,34 +55,37 @@ export function fetch11(
         if (v !== undefined) respHeaders[k] = Array.isArray(v) ? v.join(", ") : v;
       }
 
-      // Collect full body for text()/json(), also expose as ReadableStream
-      const chunks: Buffer[] = [];
-      res.on("data", (c) => chunks.push(c));
-
-      const getText = () => new Promise<string>((r) => {
-        res.on("end", () => r(Buffer.concat(chunks).toString("utf8")));
-      });
-
-      // Wrap as ReadableStream for body.getReader() consumers
+      // Single ReadableStream from the raw node response.
+      // Consumers choose: getReader() for streaming, or text()/json() which drain it.
       const bodyStream = new ReadableStream<Uint8Array>({
         start(controller) {
           res.on("data", (chunk: Buffer) => {
-            controller.enqueue(new Uint8Array(chunk));
+            try { controller.enqueue(new Uint8Array(chunk)); } catch { /* closed */ }
           });
-          res.on("end", () => {
-            try { controller.close(); } catch { /* already closed */ }
-          });
+          res.on("end", () => { try { controller.close(); } catch { /* closed */ } });
           res.on("error", (err) => controller.error(err));
         },
         cancel() { res.destroy(); },
       });
 
+      // text/json drain the stream
+      const drain = async (): Promise<string> => {
+        const reader = bodyStream.getReader();
+        const parts: Uint8Array[] = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          parts.push(value);
+        }
+        return new TextDecoder().decode(Buffer.concat(parts.map(Buffer.from)));
+      };
+
       resolve({
         status: res.statusCode ?? 0,
         ok: (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
         headers: respHeaders,
-        text: getText,
-        json: async () => JSON.parse(await getText()),
+        text: drain,
+        json: async () => JSON.parse(await drain()),
         body: bodyStream,
       });
     });
