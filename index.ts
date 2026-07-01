@@ -12,7 +12,7 @@ import { startProxy, stopProxy, PROXY_SECRET, setProxyCredentials } from "./prox
 import { loadCredentials, saveCredentials, deleteCredentials, loginWithCookies } from "./oauth";
 import { initIdentity, loadReleaseProof, type IdentityConfig, type ReleaseProof } from "./auth";
 import { type ClientKeyPair } from "./wire";
-import { chatSSE, fetchModels, stopTransport } from "./transport";
+import { chatSSE, fetchModels, stopTransport, setTransportConfig } from "./transport";
 
 let _pi: ExtensionAPI | null = null;
 
@@ -105,6 +105,7 @@ async function loginNotoken(callbacks: OAuthLoginCallbacks): Promise<OAuthCreden
     identity: identityResult.identity,
     releaseProof: identityResult.releaseProof,
   });
+  setTransportConfig(identityResult.identity, identityResult.releaseProof, identityResult.keyPair);
 
   return { refresh: accessToken, access: accessToken, expires: Date.now() + 365 * 24 * 60 * 60 * 1000 };
 }
@@ -141,6 +142,7 @@ export default async function (pi: ExtensionAPI) {
           baseUrl: stored.baseUrl,
           keyPair, identity, releaseProof,
         });
+        setTransportConfig(identity, releaseProof, keyPair);
         hasCreds = true;
         accessToken = stored.accessToken;
       }

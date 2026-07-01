@@ -8,6 +8,8 @@
 import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { type IdentityConfig, type ReleaseProof, loadReleaseProof } from "./auth";
+import { type ClientKeyPair } from "./wire";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,7 +98,8 @@ function onStdout(chunk: string) {
 
 function sendSimple(command: string, params: Record<string, any> = {}): Promise<any> {
   const proc = ensureProc();
-  const msg = JSON.stringify({ command, params });
+  const fullParams = _transportConfig ? { ...params, config: _transportConfig } : params;
+  const msg = JSON.stringify({ command, params: fullParams });
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       _simpleResolve = null;
@@ -126,9 +129,16 @@ export async function* chatSSE(
   chatId?: string,
 ): AsyncGenerator<string> {
   const proc = ensureProc();
+  const fullParams = {
+    access_token: accessToken,
+    messages,
+    model,
+    chat_id: chatId,
+    ...(_transportConfig ? { config: _transportConfig } : {}),
+  };
   const msg = JSON.stringify({
     command: "chat",
-    params: { access_token: accessToken, messages, model, chat_id: chatId },
+    params: fullParams,
   });
 
   _chatDone = false;
@@ -227,4 +237,30 @@ export function stopTransport(): void {
   _chatResolve = null;
   _simpleResolve = null;
   _buf = "";
+}
+
+// ---------------------------------------------------------------------------
+// Config: identity + release proof for signing
+// ---------------------------------------------------------------------------
+
+let _transportConfig: Record<string, any> | null = null;
+
+export function setTransportConfig(
+  identity: IdentityConfig,
+  releaseProof: ReleaseProof,
+  keyPair: ClientKeyPair,
+): void {
+  _transportConfig = {
+    client_identity: {
+      client_kind: identity.client_kind,
+      version: identity.version,
+      user_agent_product: identity.user_agent_product,
+      request_payload_prefix: identity.request_payload_prefix,
+      machine_id: identity.machine_id,
+      installation_id: identity.installation_id,
+      private_key_pem: keyPair.privatePem,
+      public_key_der_b64url: keyPair.publicDerB64url,
+    },
+    release_proof: releaseProof,
+  };
 }

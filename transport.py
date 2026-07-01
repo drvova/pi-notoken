@@ -32,9 +32,12 @@ BASE_URL = "https://notokenlimit.com"
 ORIGIN = "vscode-file://vscode-app"
 
 def load_config():
+    # Try known locations
     candidates = [
-        os.path.join(os.path.dirname(__file__), "..", ".config.json"),
-        ".config.json",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".config.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".config.json"),
+        os.path.expanduser("~/.config/pi-notoken/identity.json"),
+        os.path.join(os.getcwd(), ".config.json"),
     ]
     for p in candidates:
         if os.path.exists(p):
@@ -93,8 +96,8 @@ def build_request_headers(
     method: str, path: str, access_token: str, config: dict,
     extra: dict = None,
 ) -> dict:
-    ci = config.get("client_identity", {})
-    rp = load_release_proof()
+    ci = config.get("client_identity", config.get("identity", {}))
+    rp = config.get("release_proof", load_release_proof())
 
     ts = str(int(time.time() * 1000))
     nonce = _random_hex(16)
@@ -144,7 +147,7 @@ def build_request_headers(
 # --- Commands ---
 
 def cmd_login(params):
-    config = load_config()
+    config = params.get("config") or load_config()
     cookies = {}
     if params.get("session_cookie"):
         cookies["__Host-claude_session"] = params["session_cookie"]
@@ -218,7 +221,7 @@ def cmd_login(params):
     return {"error": "device code expired"}
 
 def cmd_refresh(params):
-    config = load_config()
+    config = params.get("config") or load_config()
     api_path = "/api/auth/extension/refresh"
     headers = build_request_headers("POST", api_path, "", config,
         extra={"Content-Type": "application/json"})
@@ -232,7 +235,7 @@ def cmd_refresh(params):
     return {"error": f"refresh failed: {r.status_code} {r.text[:200]}"}
 
 def cmd_models(params):
-    config = load_config()
+    config = params.get("config") or load_config()
     api_path = "/api/copilot/models"
     headers = build_request_headers("GET", api_path, params["access_token"], config)
     r = httpx.get(f"{BASE_URL}{api_path}", headers=headers, timeout=15)
@@ -241,7 +244,7 @@ def cmd_models(params):
     return {"error": f"models failed: {r.status_code} {r.text[:200]}"}
 
 def cmd_chat(params):
-    config = load_config()
+    config = params.get("config") or load_config()
     api_path = "/api/copilot/chat"
     headers = build_request_headers("POST", api_path, params["access_token"], config,
         extra={"Content-Type": "application/json", "Accept": "text/event-stream"})
