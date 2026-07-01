@@ -4,7 +4,7 @@
  * Enables NoTokenLimit models via local proxy.
  * Models are fetched dynamically from /api/copilot/models.
  *
- * Usage: /login notoken → /model notoken/<id>
+ * Usage: /login notoken -> /model notoken/<id>
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
@@ -55,9 +55,9 @@ async function fetchDynamicModels(
   return [];
 }
 
-/** Init or load identity + release proof for a given baseUrl. */
+/** Init identity + release proof for a given baseUrl. */
 function initIdentityForProxy(
-  baseUrl: string,
+  _baseUrl: string,
 ): { keyPair: ClientKeyPair; identity: IdentityConfig; releaseProof: ReleaseProof } | null {
   try {
     const identity: IdentityConfig = {
@@ -68,7 +68,7 @@ function initIdentityForProxy(
       machine_id: "",
       installation_id: "",
       private_key_pem: "",
-      public_der_b64url: "",
+      public_key_der_b64url: "",
       release_proof_path: "./release-proof.json",
     };
 
@@ -89,14 +89,12 @@ async function loginNotoken(callbacks: OAuthLoginCallbacks): Promise<OAuthCreden
 
   const { keyPair, identity, releaseProof } = identityResult;
 
-  // Device code flow: start → show code + URL → open browser → poll automatically
   const tokens = await runDeviceCodeFlow(
     baseUrl,
     keyPair,
     identity,
     releaseProof,
     (userCode, verificationUrl) => {
-      // Show the user their code and the URL to visit
       callbacks.onAuth({ url: verificationUrl });
       console.error(`[notoken] Your code: ${userCode}`);
       console.error(`[notoken] Open: ${verificationUrl}`);
@@ -157,7 +155,6 @@ export default async function (pi: ExtensionAPI) {
   try {
     const stored = loadCredentials();
     if (stored) {
-      // Reconstruct key pair and identity from stored credentials
       keyPair = { privatePem: stored.keyPair.privatePem, publicDerB64url: stored.keyPair.publicDerB64url };
       identity = {
         ...stored.identity,
@@ -205,7 +202,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  console.error(hasCreds ? `[notoken] connected — ${models.length} models` : `[notoken] /login notoken to connect`);
+  console.error(hasCreds ? `[notoken] connected -- ${models.length} models` : `[notoken] /login notoken to connect`);
 
   pi.registerCommand("notoken-status", {
     description: "Show NoTokenLimit auth status",
@@ -215,7 +212,7 @@ export default async function (pi: ExtensionAPI) {
         ctx.ui.notify("NoTokenLimit: not signed in. /login notoken", "warning");
         return;
       }
-      ctx.ui.notify(`NoTokenLimit: authenticated (${c.baseUrl}) — token issued ${c.issuedAt}`, "info");
+      ctx.ui.notify(`NoTokenLimit: authenticated (${c.baseUrl}) -- token issued ${c.issuedAt}`, "info");
     },
   });
 

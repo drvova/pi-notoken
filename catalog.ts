@@ -3,6 +3,7 @@
  * Fetches at startup and after login. Cached with TTL.
  */
 import { buildRequestHeaders } from "./metadata";
+import { fetch11 } from "./fetch11";
 import { type ClientKeyPair } from "./wire";
 
 const CATALOG_TTL_MS = 10 * 60 * 1000;
@@ -65,7 +66,7 @@ async function fetchCatalog(
     releaseProof,
   });
 
-  const resp = await fetch(`${baseUrl.replace(/\/$/, "")}${apiPath}`, { method: "GET", headers, signal });
+  const resp = await fetch11(`${baseUrl.replace(/\/$/, "")}${apiPath}`, { method: "GET", headers, signal });
   if (!resp.ok) throw new Error(`Catalog fetch failed: HTTP ${resp.status}`);
 
   const data = await resp.json() as unknown;

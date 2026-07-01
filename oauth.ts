@@ -1,21 +1,24 @@
 /**
  * Device-code OAuth flow for NoTokenLimit.
  * Same flow as the official VS Code extension:
- *   1. POST /api/auth/extension/device-code → get device_code + user_code + URL
+ *   1. POST /api/auth/extension/device-code -> get device_code + user_code + URL
  *   2. Open browser to verification_uri_complete
  *   3. Poll POST /api/auth/extension/poll until access_token or expiry
  *   4. Save tokens to credentials file
+ *
+ * All HTTP calls use fetch11 (HTTP/1.1) to bypass server TLS fingerprinting.
  */
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { spawn } from "child_process";
+import { fetch11 } from "./fetch11";
 import { buildRequestHeaders } from "./metadata";
 import { type ClientKeyPair, randomHex } from "./wire";
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Types
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 export interface OAuthCredentials {
   accessToken: string;
@@ -45,9 +48,9 @@ export interface DeviceCodeResponse {
   interval: number;
 }
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Credential storage
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 const APP_DIR = path.join(os.homedir(), ".config", "pi-notoken");
 const CREDS_FILE = "credentials.json";
@@ -78,9 +81,9 @@ export function deleteCredentials(): boolean {
   return true;
 }
 
-// ----------------------------------------------------------------------------
-// Device code API calls
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Device code API calls (all via fetch11)
+// ---------------------------------------------------------------------------
 
 type IdentityLike = { client_kind: string; version: string; user_agent_product: string; request_payload_prefix: string; installation_id: string; machine_id: string };
 type ReleaseProofLike = { release_id: string; signature: string; [key: string]: unknown };
@@ -108,19 +111,13 @@ export async function startDeviceCode(
     extra: { "Content-Type": "application/json" },
   });
 
-  const resp = await fetch(`${baseUrl.replace(/\/$/, "")}${apiPath}`, {
+  const resp = await fetch11(`${baseUrl.replace(/\/$/, "")}${apiPath}`, {
     method: "POST",
     headers,
     body: "{}",
   });
 
   const data = await resp.json() as Record<string, unknown>;
-  console.error("[notoken] device-code request:", {
-    url: `${baseUrl}${apiPath}`,
-    status: resp.status,
-    headers: Object.fromEntries(Object.entries(headers).filter(([k]) => k !== "x-ext-obf-secret" && k !== "x-ext-request-signature")),
-    body: data,
-  });
   if (resp.status !== 200) {
     throw new Error(`Device code failed (HTTP ${resp.status}): ${JSON.stringify(data)}`);
   }
@@ -165,7 +162,7 @@ export async function pollDeviceCode(
     extra: { "Content-Type": "application/json" },
   });
 
-  const resp = await fetch(`${baseUrl.replace(/\/$/, "")}${apiPath}`, {
+  const resp = await fetch11(`${baseUrl.replace(/\/$/, "")}${apiPath}`, {
     method: "POST",
     headers,
     body: JSON.stringify({ device_code: deviceCode, device_name: deviceName }),
@@ -175,9 +172,9 @@ export async function pollDeviceCode(
   return { status: resp.status, data };
 }
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Full device code flow
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 export async function runDeviceCodeFlow(
   baseUrl: string,
@@ -190,16 +187,12 @@ export async function runDeviceCodeFlow(
   const init = await startDeviceCode(baseUrl, keyPair, identity, releaseProof);
   const url = init.verification_uri_complete || init.verification_uri;
 
-  // Show the user their code and URL
   onCode(init.user_code, url);
-
-  // Open browser
   await openBrowser(url).catch(() => {});
 
-  // Poll until done or expired
   const expiresAt = Date.now() + init.expires_in * 1000;
   const intervalMs = Math.max(2000, init.interval * 1000);
-  const deviceName = `pi-${randomHex(4)}`;
+  const deviceName = `VS Code-${randomHex(4)}`;
 
   while (Date.now() < expiresAt) {
     await sleep(intervalMs);
@@ -209,7 +202,6 @@ export async function runDeviceCodeFlow(
       const result = await pollDeviceCode(baseUrl, init.device_code, deviceName, keyPair, identity, releaseProof);
       const data = result.data;
 
-      // Success — got access token
       if (result.status === 200 && data.access_token) {
         return {
           accessToken: data.access_token as string,
@@ -225,17 +217,16 @@ export async function runDeviceCodeFlow(
       const errorMsg = (data.error as string) || "Authorization failed.";
       throw new Error(errorMsg);
     } catch (e) {
-      if (e instanceof Error && (e.message.includes("cancelled") || e.message.includes("failed") || e.message.includes("Session"))) throw e;
-      // Network errors → retry
+      if (e instanceof Error && (e.message.includes("cancelled") || e.message.includes("Session"))) throw e;
     }
   }
 
   throw new Error("The authorization code expired. Please try again.");
 }
 
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // Helpers
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

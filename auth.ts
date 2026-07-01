@@ -115,6 +115,7 @@ export async function refreshToken(
   _refreshLocks.set(accountName, true);
 
   try {
+    const { fetch11 } = await import("./fetch11");
     const apiPath = "/api/auth/extension/refresh";
     const headers = buildRequestHeaders({
       method: "POST",
@@ -132,7 +133,7 @@ export async function refreshToken(
       extra: { "Content-Type": "application/json" },
     });
 
-    const resp = await fetch(`${baseUrl.replace(/\/$/, "")}${apiPath}`, {
+    const resp = await fetch11(`${baseUrl.replace(/\/$/, "")}${apiPath}`, {
       method: "POST",
       headers,
       body: JSON.stringify({ refresh_token: refreshToken }),

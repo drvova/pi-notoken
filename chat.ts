@@ -3,6 +3,7 @@
  * Translates OpenAI chat requests → NoTokenLimit REST, streams SSE back.
  */
 import { buildRequestHeaders } from "./metadata";
+import { fetch11 } from "./fetch11";
 import { type ClientKeyPair } from "./wire";
 import { isTokenError, isSSETokenError, refreshToken, type TokenPair } from "./auth";
 import { parseSSELine } from "./wire";
@@ -219,7 +220,7 @@ export async function* streamChatEvents(
 
     let resp: Response;
     try {
-      resp = await fetch(`${req.baseUrl.replace(/\/$/, "")}${apiPath}`, {
+      resp = await fetch11(`${req.baseUrl.replace(/\/$/, "")}${apiPath}`, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
