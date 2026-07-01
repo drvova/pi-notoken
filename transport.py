@@ -75,11 +75,21 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 def _machine_hash(machine_id: str) -> str:
-    return hashlib.sha256(machine_id.encode()).hexdigest()[:64]
+    return _sha256_hex(f"notokenlimit-machine-v2|{machine_id}".encode())
 
 def _get_client_secret(version: str, ts: str, nonce: str) -> str:
-    payload = f"notokenlimit-vscode-client-v1\n{version}\n{ts}\n{nonce}"
-    return _sha256_hex(payload.encode())[:32]
+    raw = "|||".join([
+        "7b29a8f4c1e05d36",
+        version,
+        "notokenlimit-super-secret-salt-v1",
+        ts,
+        "9f8e7d6c5b4a3921",
+        nonce,
+    ])
+    h = raw
+    for _ in range(3):
+        h = _sha256_hex(h.encode())
+    return "ntl_sec_" + h[:32]
 
 def _sign_ed25519(private_pem: str, message: str) -> str:
     if not HAS_CRYPTO:
@@ -135,8 +145,6 @@ def build_request_headers(
         "x-ext-request-signature": request_sig,
         "x-ext-obf-secret": _get_client_secret(version, ts, nonce),
         "Accept": "application/json",
-        "Origin": ORIGIN,
-        "Referer": f"{ORIGIN}/",
     }
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
