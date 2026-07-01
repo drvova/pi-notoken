@@ -2,8 +2,7 @@
  * HTTP SSE streaming for NoTokenLimit chat completions.
  * Translates OpenAI chat requests → NoTokenLimit REST, streams SSE back.
  */
-import { buildRequestHeaders } from "./metadata";
-import { fetch11 } from "./fetch11";
+import { chatSSE } from "./transport";
 import { type ClientKeyPair } from "./wire";
 import { isTokenError, isSSETokenError, refreshToken, type TokenPair } from "./auth";
 import { parseSSELine } from "./wire";
@@ -202,119 +201,36 @@ export async function* streamChatEvents(
   let currentRefreshToken = req.refreshToken;
 
   for (let retryAttempt = 0; retryAttempt < 2; retryAttempt++) {
-    const headers = buildRequestHeaders({
-      method: "POST",
-      path: apiPath,
-      accessToken: currentToken,
-      privatePem: req.keyPair.privatePem,
-      publicDerB64url: req.keyPair.publicDerB64url,
-      installationId: req.identity.installation_id,
-      machineId: req.identity.machine_id,
-      version: req.identity.version,
-      clientKind: req.identity.client_kind,
-      userAgentProduct: req.identity.user_agent_product,
-      requestPayloadPrefix: req.identity.request_payload_prefix,
-      releaseProof: req.releaseProof,
-      extra: { "Content-Type": "application/json", "Accept": "text/event-stream" },
-    });
-
-    let resp: Response;
-    try {
-      resp = await fetch11(`${req.baseUrl.replace(/\/$/, "")}${apiPath}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: req.signal,
-      });
-    } catch (e) {
-      yield { kind: "error", message: String(e) };
-      return;
-    }
-
-    if (resp.status !== 200) {
-      const errorText = await resp.text().catch(() => "");
-      if (isTokenError(resp.status, errorText) && retryAttempt === 0) {
-        const newTokens = await refreshToken(req.baseUrl, currentRefreshToken, req.keyPair, req.identity, req.releaseProof);
-        if (newTokens) {
-          currentToken = newTokens.accessToken;
-          currentRefreshToken = newTokens.refreshToken;
-          callbacks?.onTokenRefresh?.(newTokens);
-          continue;
-        }
-      }
-      yield { kind: "error", message: `Upstream HTTP ${resp.status}: ${errorText.slice(0, 500)}` };
-      return;
-    }
-
-    if (!resp.body) {
-      yield { kind: "error", message: "Upstream response had no body" };
-      return;
-    }
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
     const sseBuffer: string[] = [];
     let accumulatedText = "";
     let shouldRetry = false;
 
     try {
-      const idleController = new AbortController();
-      const idleTimer = setTimeout(() => idleController.abort(new Error("idle timeout")), SSE_IDLE_TIMEOUT_MS);
+      for await (const rawLine of chatSSE(currentToken, payload.messages as any, payload.model as string, payload.chatId as string | undefined)) {
+        const event = parseSSELine(rawLine, sseBuffer);
+        if (!event) continue;
 
-      try {
-        while (true) {
-          const readP = reader.read();
-          const timeoutP = new Promise<never>((_, reject) => {
-            const t = setTimeout(() => reject(new Error("idle timeout")), SSE_IDLE_TIMEOUT_MS);
-            idleController.signal.addEventListener("abort", () => { clearTimeout(t); reject(idleController.signal.reason); }, { once: true });
-          });
+        const parsed = parseSSEData(event.data);
+        if (!parsed) continue;
 
-          let result: ReadableStreamReadResult<Uint8Array>;
-          try {
-            result = await Promise.race([readP, timeoutP]);
-          } catch {
-            break;
-          }
-
-          if (result.done) break;
-          clearTimeout(idleTimer);
-
-          const text = decoder.decode(result.value, { stream: true });
-          const lines = text.split("\n");
-
-          for (const line of lines) {
-            const event = parseSSELine(line, sseBuffer);
-            if (!event) continue;
-
-            const parsed = parseSSEData(event.data);
-            if (!parsed) continue;
-
-            if (parsed.kind === "error") {
-              if (isSSETokenError(parsed) && !accumulatedText && retryAttempt === 0) {
-                const newTokens = await refreshToken(req.baseUrl, currentRefreshToken, req.keyPair, req.identity, req.releaseProof);
-                if (newTokens) {
-                  currentToken = newTokens.accessToken;
-                  currentRefreshToken = newTokens.refreshToken;
-                  callbacks?.onTokenRefresh?.(newTokens);
-                  shouldRetry = true;
-                  break;
-                }
-              }
-              yield parsed;
-              return;
+        if (parsed.kind === "error") {
+          if (isSSETokenError(parsed) && !accumulatedText && retryAttempt === 0) {
+            const newTokens = await refreshToken(req.baseUrl, currentRefreshToken, req.keyPair, req.identity, req.releaseProof);
+            if (newTokens) {
+              currentToken = newTokens.accessToken;
+              currentRefreshToken = newTokens.refreshToken;
+              callbacks?.onTokenRefresh?.(newTokens);
+              shouldRetry = true;
+              break;
             }
-
-            if (parsed.kind === "text") accumulatedText += parsed.text;
-            yield parsed;
           }
-          if (shouldRetry) break;
+          yield parsed;
+          return;
         }
-      } finally {
-        clearTimeout(idleTimer);
-        try { reader.releaseLock(); } catch { /* ignore */ }
-        try { void resp.body?.cancel(); } catch { /* ignore */ }
-      }
 
+        if (parsed.kind === "text") accumulatedText += parsed.text;
+        yield parsed;
+      }
       if (shouldRetry) continue;
       return;
     } catch (e) {
